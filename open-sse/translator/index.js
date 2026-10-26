@@ -80,7 +80,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   // Always ensure tool_calls have id (some providers require it)
   ensureToolCallIds(result);
-  
+
   // Kiro performs stricter source-aware reconciliation after session replay.
   // The generic helper inserts OpenAI `role: tool` messages, which a direct
   // Claude→Kiro translator cannot consume and which cannot repair partial
@@ -190,7 +190,14 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
   // even when no format conversion is needed, so streamed tool_use blocks must
   // be decloaked here or the client sees an unknown ("_ide"-suffixed) tool.
   if (sourceFormat === targetFormat) {
-    return [restoreToolNames(decloakStreamChunk(chunk, state?.toolNameMap), state?.toolNameMap)];
+    // Same-format (openai→openai) passthrough: the upstream chunk reaches the
+    // client as-is. A fragment that opens a new tool-call index without an id
+    // aborts strict OpenAI-compatible clients (#4992) — mint/reuse one first.
+    if (state && chunk && typeof chunk === "object") {
+      if (!state.streamToolCallIds) state.streamToolCallIds = new Map();
+      ensureStreamToolCallIds(chunk, state.streamToolCallIds);
+    }
+    return [restoreNamespaceToolCalls(restoreToolNames(decloakStreamChunk(chunk, state?.toolNameMap), state?.toolNameMap), state?.namespaceToolMap)];
   }
 
   let results = [chunk];
@@ -262,6 +269,10 @@ export function initState(sourceFormat) {
     inThinkingBlock: false,
     currentBlockIndex: null,
     toolCalls: new Map(),
+    // Tool-call ids already emitted to the client, keyed by tool-call index.
+    // A fragment that opens a NEW index without an id breaks strict
+    // OpenAI-compatible clients (#4992).
+    streamToolCallIds: new Map(),
     finishReason: null,
     finishReasonSent: false,
     usage: null,
